@@ -18,7 +18,7 @@ lazy val basicSettings = Seq(
 lazy val root = (Project("simple-serialization-to-array", file("."))
   settings (moduleName := "simple-serialization-to-array")
   settings basicSettings
-  aggregate (serializer, akkaProtocolSerializer))
+  aggregate (serializer, akkaProtocolSerializer, sentiment))
 
 lazy val serializer = (Project("shapeless-serializer", file("shapeless-serializer"))
   settings (moduleName := "shapeless-serializer")
@@ -29,4 +29,10 @@ lazy val akkaProtocolSerializer = (Project("akka-protocol-serializer", file("akk
   settings (moduleName := "akka-protocol-serializer")
   settings basicSettings
   settings (libraryDependencies ++= Seq(akka, scalaTest))
+  dependsOn serializer)
+
+lazy val sentiment = (Project("sentiment-detection", file("sentiment-detection"))
+  settings (moduleName := "sentiment-detection")
+  settings basicSettings
+  settings (libraryDependencies ++= Seq(akka, scalaTest, scalaCsv, ejml, logback, trove) ++ circeAll ++ dl4jAll)
   dependsOn serializer)
