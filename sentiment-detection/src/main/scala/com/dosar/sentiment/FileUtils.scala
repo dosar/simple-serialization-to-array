@@ -5,10 +5,12 @@ import java.time.{Instant, LocalDate, ZoneId}
 
 import io.circe.Decoder
 
+import scala.io.Codec
+
 object FileUtils {
 
   def recreateFile(path: String) = {
-    val f = reflect.io.File(path)
+    val f = reflect.io.File(path)(Codec.UTF8)
     if(f.exists) f.delete()
     f.createFile()
   }

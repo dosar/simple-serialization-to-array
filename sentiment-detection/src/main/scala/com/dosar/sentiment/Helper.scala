@@ -63,6 +63,10 @@ object Helper {
     res
   }
 
+  def format(d: Double) = d.formatted("%.2f")
+
+  def using[T](t: T)(f: T => Unit): T = { f(t); t }
+
   def cleanStr(str: String) = {
     str.replace("\"{", "{").replace("}\"", "}").replace("""\"""", "\"")
   }

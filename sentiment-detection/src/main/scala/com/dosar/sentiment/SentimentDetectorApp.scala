@@ -1,64 +1,118 @@
 package com.dosar.sentiment
 
 import Helper._
-import org.deeplearning4j.text.tokenization.tokenizer.preprocessor.CommonPreprocessor
+import com.typesafe.config.ConfigFactory
+import org.deeplearning4j.text.tokenization.tokenizer.preprocessor.{CommonPreprocessor, StringCleaning}
 import org.deeplearning4j.text.tokenization.tokenizerfactory.{DefaultTokenizerFactory, NGramTokenizerFactory}
+
+import scala.collection.mutable
 
 object SentimentDetectorApp extends App {
 
-  shardData()
-  prepareData()
+  word2vec.startSkipGram()
 
-  def loadForDebug(iter: Long) = meter("loading vector model") {
-    val vec = word2VecHelper.loadWord2Vec()
-    word2VecHelper.debug(vec)
+  def loadForDebug() = meter("loading vector model") {
+    val vec = word2vec.helper.loadWord2Vec()
+    word2vec.helper.debug(vec)
   }
 
-  def shardData() = {
-    new DataPreparer().putDataAccordingToDate(
-      fileFrom = "/Users/nightmarepipetz/work/files/query-hive-38246.csv",
-      dirTo = "/Users/nightmarepipetz/work/files/user-documents/")
-  }
+  object data {
 
-  def prepareData() = {
-    new DataPreparer().prepareInputForWord2Vec(
-      dirFrom = "/Users/nightmarepipetz/work/files/user-documents/",
-      fileTo = "/Users/nightmarepipetz/work/files/word-vec-input-2017-8_10.txt"
-    )
-  }
+    def shard() =
+      new DataPreparer().putDataAccordingToDate(fileFrom = shardInput, dirTo = shardOutput)
 
-  def prepareDataForOctave() = {
-    new DataPreparer().prepareForOctave(word2VecHelper.vectorsFile,
-      cellArrayFile = "/Users/nightmarepipetz/work/files/labels2d.txt",
-      matrixFile = "/Users/nightmarepipetz/work/files/2dpoints.txt"
-    )
-  }
+    def prepareForTraining() =
+      new DataPreparer().prepareInputForWord2Vec(dirFrom = shardOutput, fileTo = trainingInput)
 
-  def clusterize() = {
-    val vec = word2VecHelper.loadWord2Vec()
-//    word2VecHelper.reduceDimensionsAndClusterize(vec, 2)
-    word2VecHelper.clusterByCommittee(vec)
-  }
-
-  def startSkipGram() = {
-
-    def defaultFactory = {
-      val result = new DefaultTokenizerFactory()
-      result.setTokenPreProcessor(new CommonPreprocessor())
-      result
+    def engVocab(): String => Boolean = withCloseable(scala.io.Source.fromFile(data.google10000EnWords, "UTF-8")) { source =>
+      source.getLines().foldLeft(mutable.HashSet[String]()){ (set, word) => set.add(word); set }
     }
 
-    def ngramFactory(min: Int, max: Int) = {
-      val result = new NGramTokenizerFactory(new DefaultTokenizerFactory(), min, max)
-      result.setTokenPreProcessor(new CommonPreprocessor())
-      result
+    def allVocab(): String => Boolean = x => true
+
+    val trainingInput = conf.filesDir + "/word-vec-input-2017-8_10.txt"
+    val google10000EnWords = conf.filesDir + "/google-10000-english.txt"
+    val shardInput = conf.filesDir + "/query-hive-38246.csv"
+    val shardOutput = conf.filesDir + "/user-documens/"
+  }
+
+  object forOctave {
+
+    def prepareUnigrams() = {
+      new DataPreparer().prepareNgramsForOctave(word2vec.fileGenerator.vectorsFile,
+        cellArrayFile = labelsFile,
+        matrixFile = matrixFile,
+        N = 1
+      )
     }
 
-    meter ("word 2 vec training"){
-      word2VecHelper.trainAndStore("/Users/nightmarepipetz/work/files/word-vec-input-2017-8_10.txt", ngramFactory(1, 2))
+    def extractNgrams() =
+      new DataPreparer().extractNgrams(word2vec.fileGenerator.vectorsFile, ngramsFile)
+
+
+    val labelsFile = conf.filesDir + "/labels2d.txt"
+    val matrixFile = conf.filesDir + "/2dpoints.txt"
+    val ngramsFile = conf.filesDir + "/ngrams300.txt"
+  }
+
+  object debug {
+    def countSentences() = {
+      val it = new UserDocumentSentenceIterator(data.trainingInput, data.engVocab())
+      var sentences = 0
+      val words = new mutable.HashSet[String]()
+      while (it.hasNext) {
+        val sentence = it.nextSentence()
+        sentence.split(' ').foreach(w => words.add(StringCleaning.stripPunct(w)))
+        sentences += 1
+      }
+      println(s"amount of sentences is $sentences")
+      println(s"amount of unique words is ${words.size}")
+    }
+
+    def showWordsInSentenceDistribution() = {
+      type WordsCount = Int; type SentCount = Int
+      withCloseable(new UserDocumentSentenceIterator(data.trainingInput, data.engVocab())) { it =>
+        val result = it.toScalaIterator.foldLeft(mutable.Map[WordsCount, SentCount]() withDefaultValue 0) { case (map, sentence) =>
+          val wordsCount = sentence.split(' ').length
+          map(wordsCount) += 1
+          map
+        }
+        val all = result.values.sum
+        result.toSeq.sortBy(_._1).foldLeft(0){ case (acc, (wordsCount, sentCount)) =>
+          val newAcc = acc + sentCount
+          println(s"words: $wordsCount, sentences: $sentCount, percentile: ${format(sentCount.toDouble / all * 100)}, " +
+            s"withLessWords: $newAcc, percentile: ${format(newAcc.toDouble / all * 100)}")
+            newAcc
+        }
+      }
     }
   }
 
-//  lazy val word2VecHelper = Word2VecHelper(iter = 2, dimensions = 2) // done specifically for 2 dimensions reduction
-  lazy val word2VecHelper = Word2VecHelper(iter = 2, dimensions = 2)
+  object word2vec {
+    final val dimensions = 300
+    final val fileGenerator = new FileGenerator(conf.filesDir, dimensions, None)
+    final val helper = Word2VecHelper(dimensions, fileGenerator)
+
+    def startSkipGram() = {
+      meter ("word 2 vec training"){
+        val sentenceIterator = new UserDocumentSentenceIterator(data.trainingInput, data.allVocab())
+        helper.trainAndStore(ngramFactory(1, 2), sentenceIterator)
+      }
+    }
+
+    def clusterize() = {
+      val vec = helper.loadWord2Vec()
+      helper.clusterByCommittee(vec)
+    }
+
+    private def defaultFactory = using(new DefaultTokenizerFactory())(_.setTokenPreProcessor(new CommonPreprocessor()))
+
+    private def ngramFactory(min: Int, max: Int) =
+      using(new NGramTokenizerFactory(new DefaultTokenizerFactory(), min, max))(_.setTokenPreProcessor(new CommonPreprocessor()))
+  }
+
+  lazy val tsConfig = ConfigFactory.load().getConfig("sentiment-detection")
+  lazy val conf = new {
+    final val filesDir = tsConfig.getString("files-dir")
+  }
 }

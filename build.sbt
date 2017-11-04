@@ -34,5 +34,6 @@ lazy val akkaProtocolSerializer = (Project("akka-protocol-serializer", file("akk
 lazy val sentiment = (Project("sentiment-detection", file("sentiment-detection"))
   settings (moduleName := "sentiment-detection")
   settings basicSettings
-  settings (libraryDependencies ++= Seq(akka, scalaTest, scalaCsv, ejml, logback, trove) ++ circeAll ++ dl4jAll)
+  settings (libraryDependencies ++= Seq(akka, scalaTest, scalaCsv, ejml, logback, trove, langDetect) ++ circeAll ++ dl4jCpu)
+//  settings (envVars in Compile := envVars.value + ("nd4j.backend" -> "nd4j-cuda-8.0-platform"))
   dependsOn serializer)

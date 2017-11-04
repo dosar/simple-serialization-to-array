@@ -3,42 +3,41 @@ package com.dosar.sentiment
 import java.util.Properties
 
 import edu.ucla.sspace.clustering.ClusteringByCommittee
-import edu.ucla.sspace.matrix.{AtomicGrowingSparseMatrix, SparseHashMatrix, SparseMatrix}
+import edu.ucla.sspace.matrix.AtomicGrowingSparseMatrix
 import org.deeplearning4j.models.embeddings.loader.WordVectorSerializer
 import org.deeplearning4j.models.word2vec.Word2Vec
 import org.deeplearning4j.plot.BarnesHutTsne
 import org.deeplearning4j.text.sentenceiterator.{SentenceIterator, SentencePreProcessor}
-import org.deeplearning4j.text.tokenization.tokenizerfactory.{DefaultTokenizerFactory, TokenizerFactory}
+import org.deeplearning4j.text.tokenization.tokenizerfactory.TokenizerFactory
 import io.circe.parser.decode
+import org.deeplearning4j.text.tokenization.tokenizer.preprocessor.StringCleaning
 
 import scala.collection.mutable
-import scala.collection.mutable.ArrayBuffer
 
 object Word2VecHelper {
-  def apply(iter: Int, dimensions: Int) = new Word2VecHelper(Some(iter), dimensions)
+  def apply(dimensions: Int, fileGenerator: FileGenerator) = new Word2VecHelper(dimensions, fileGenerator)
 }
 
-class Word2VecHelper private[Word2VecHelper](iter: Option[Long] = None, resultDimensions: Int) {
+class Word2VecHelper private[Word2VecHelper](resultDimensions: Int, fileGenerator: FileGenerator) {
 
-  def trainAndStore(sentencesFile: String, tokenizerFactory: TokenizerFactory) = {
-    val sentenceIterator = new UserDocumentSentenceIterator(sentencesFile)
+  def trainAndStore(tokenizerFactory: TokenizerFactory, sentenceIterator: SentenceIterator) = {
     val vecTrainee: Word2Vec = new Word2Vec.Builder()
-      .minWordFrequency(20)
-      .iterations(5)
-      .epochs(5)
+      .minWordFrequency(5)
+      .allowParallelTokenization(true)
+      .iterations(2)
+      .epochs(1)
       .layerSize(resultDimensions)
-      .negativeSample(1.0)
       .seed(42)
-      .windowSize(5)
+      .windowSize(10)
       .iterate(sentenceIterator)
       .tokenizerFactory(tokenizerFactory)
       .build()
     vecTrainee.fit()
-    WordVectorSerializer.writeWordVectors(vecTrainee.lookupTable(), file(vectorsFile))
+    WordVectorSerializer.writeWordVectors(vecTrainee.lookupTable(), fileGenerator.createVectorsFile())
   }
 
   def loadWord2Vec() =
-    WordVectorSerializer.readWord2VecModel(vectorsFile)
+    WordVectorSerializer.readWord2VecModel(fileGenerator.vectorsFile)
 
   def debug(vec: Word2Vec) = {
     println(vec.vocab().hasToken("B64:aQ=="))
@@ -47,7 +46,7 @@ class Word2VecHelper private[Word2VecHelper](iter: Option[Long] = None, resultDi
 
   }
 
-  def reduceDimensionsAndClusterize(vec: Word2Vec, dimensionsNum: Int) = {
+  def reduceDimensionsAndClusterize(vec: Word2Vec, targetDimensions: Int) = {
     val tsne = new BarnesHutTsne.Builder()
       .setMaxIter(20)
       .stopLyingIteration(250)
@@ -56,11 +55,9 @@ class Word2VecHelper private[Word2VecHelper](iter: Option[Long] = None, resultDi
       .theta(2)
       .normalize(true)
       .setMomentum(0.5)
-      .numDimension(dimensionsNum)
-//      .perplexity(100)
+      .numDimension(targetDimensions)
       .build()
-    vec.lookupTable().plotVocab(tsne, vec.vocab().numWords(), file(vocabToPlotFile))
-//    vec.lookupTable().plotVocab(tsne, 10000, file)
+    vec.lookupTable().plotVocab(tsne, vec.vocab().numWords(), fileGenerator.createTsneFile(targetDimensions))
   }
 
   def clusterByCommittee(vec: Word2Vec) = {
@@ -89,38 +86,47 @@ class Word2VecHelper private[Word2VecHelper](iter: Option[Long] = None, resultDi
       println(s"$i cluster has ${result.get(i).length()} elements")
     }
   }
-
-  def file(path: String) = FileUtils.recreateFile(path).jfile
-
-  final val vectorsFile = s"/Users/nightmarepipetz/work/files/vectors${iter.getOrElse("")}.txt"
-  final val vocabToPlotFile = s"/Users/nightmarepipetz/work/files/tsne2d${iter.getOrElse("")}.txt"
 }
 
 object UserDocumentSentenceIterator {
-  private [UserDocumentSentenceIterator] def init(file: String) = {
-    val source = scala.io.Source.fromFile(file)
-    (source, Helper.iterate(source.getLines())(decode[Array[String]]))
+  private [UserDocumentSentenceIterator] def init(sentenceFile: String, vocab: String => Boolean) = {
+    val source = scala.io.Source.fromFile(sentenceFile, "UTF-8")
+    val iterator = Helper.iterate(source.getLines())(decode[Array[String]]).flatten.filter { sentence =>
+      val words = sentence.split(' ').map(StringCleaning.stripPunct)
+      val engWords = words.count(vocab)
+      (engWords / words.length.toDouble) >= 0.9
+    }
+    (source, iterator)
   }
 }
 
-class UserDocumentSentenceIterator(file: String) extends SentenceIterator {
-  private var (source, iterator) = UserDocumentSentenceIterator.init(file)
+class UserDocumentSentenceIterator(sentenceFile: String, vocab: String => Boolean) extends SentenceIterator { self =>
+  private var (source, iterator) = UserDocumentSentenceIterator.init(sentenceFile, vocab)
   private var preProcessor: SentencePreProcessor = _
   override def setPreProcessor(preProcessor: SentencePreProcessor) = this.preProcessor = preProcessor
   override def getPreProcessor = preProcessor
-  override def hasNext = iterator.hasNext
+  override def hasNext() = iterator.hasNext
   override def nextSentence() = {
-    iterator.next().mkString(" ")
+    val s = iterator.next()
+    if(preProcessor != null) preProcessor.preProcess(s)
+    else s
   }
 
   override def reset() = {
     source.close()
-    val (s, i) = UserDocumentSentenceIterator.init(file)
+    val (s, i) = UserDocumentSentenceIterator.init(sentenceFile, vocab)
     source = s
     iterator = i
   }
 
   override def finish() = {
     source.close
+  }
+
+  def close() = finish()
+
+  def toScalaIterator = new Iterator[String] {
+    override def hasNext() = self.hasNext()
+    override def next() = self.nextSentence()
   }
 }

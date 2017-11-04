@@ -3,7 +3,7 @@ package com.dosar.sentiment
 import java.io.BufferedWriter
 import java.time.{Instant, LocalDate, ZoneId}
 
-import scala.io.{BufferedSource, Source}
+import scala.io.{BufferedSource, Codec, Source}
 import Helper._
 import com.github.tototoshi.csv.CSVReader
 import com.github.tototoshi.csv._
@@ -26,9 +26,20 @@ class DataPreparer {
 
   final val printer: Printer = Printer.noSpaces.copy(dropNullKeys = true)
 
-  def prepareForOctave(file: String, cellArrayFile: String, matrixFile: String) = {
-    val size = withCloseable(Source.fromFile(file)) { _.getLines().drop(1).size }
-    withCloseable(recreateFile(cellArrayFile).bufferedWriter()) { cellOutput =>
+  type WordsCount = Int; type Ngram = String; type Coordinate = String
+
+  object WordCoordinates {
+
+    def unapply(line: String): Option[(WordsCount, Ngram, List[Coordinate])] = {
+      val wordB64 :: points = line.split(' ').toList
+      val word = WordVectorSerializer.decodeB64(wordB64)
+      Some(word.split(' ').length, word, points)
+    }
+  }
+
+  def prepareNgramsForOctave(file: String, cellArrayFile: String, matrixFile: String, N: Int) = {
+    val size = withCloseable(Source.fromFile(file)){ _.getLines().drop(1).collect{case WordCoordinates(N, _, _) => }.size}
+    withCloseable(recreateFile(cellArrayFile).bufferedWriter()){ cellOutput =>
       cellOutput.appendLine("# Created by Octave 4.2.1, Sun Oct 29 03:48:48 2017 EET <nightmarepipetz@Andreys-MacBook-Pro-2.local>")
       cellOutput.appendLine("# name: csa")
       cellOutput.appendLine("# type: cell")
@@ -36,17 +47,28 @@ class DataPreparer {
       cellOutput.appendLine("# columns: 1")
       withCloseable(recreateFile(matrixFile).bufferedWriter()) { matrixOutput =>
         withCloseable(Source.fromFile(file)) { source =>
-          for(line <- source.getLines().drop(1)) {
-            val wordB64 :: points = line.split(' ').toList
-            matrixOutput.appendLine(points.mkString(","))
-            val word = WordVectorSerializer.decodeB64(wordB64)
+          for(WordCoordinates(n, ngram, coordinates) <- source.getLines().drop(1) if n == N) {
+            matrixOutput.appendLine(coordinates.mkString(","))
             cellOutput.appendLine("# name: <cell-element>")
             cellOutput.appendLine("# type: sq_string")
             cellOutput.appendLine("# elements: 1")
-            cellOutput.appendLine(s"# length: ${word.getBytes().length}")
-            cellOutput.appendLine(word)
+            cellOutput.appendLine(s"# length: ${ngram.getBytes().length}")
+            cellOutput.appendLine(ngram)
             cellOutput.append("\n\n")
           }
+        }
+      }
+    }
+  }
+
+  def extractNgrams(file: String, ngramFile: String) = {
+    withCloseable(recreateFile(ngramFile).bufferedWriter()) { ngramOutput =>
+      withCloseable(Source.fromFile(file)) { source =>
+        for(line <- source.getLines().drop(1)) {
+          val wordB64 :: points = line.split(' ').toList
+          val word = WordVectorSerializer.decodeB64(wordB64)
+          if(word.split(' ').length > 1)
+            ngramOutput.appendLine(word)
         }
       }
     }
@@ -59,7 +81,7 @@ class DataPreparer {
       .flatMap(m => (1 to 31).map(d => (m, d) -> recreateFile(dayFile(dirTo, m, d)).bufferedWriter()))
       .toMap
 
-    withCloseable(CSVReader.open(fileFrom)) { source =>
+    withCloseable(CSVReader.open(fileFrom, "UTF-8")) { source =>
       iterate(source.iterator)(line => SentimentDetector.toChatMsgInfo(line(9))).foreach { chatMessageInfo =>
         val date = chatMessageInfo.timems.toLocalDate
         val serialized = printer.pretty(chatMessageInfo.asJson)
@@ -84,18 +106,13 @@ class DataPreparer {
   }
 
   private def prepareDayData(dir: String, month: Int, day: Int): Array[String] =
-    withCloseable(Source.fromFile(dayFile(dir, month, day))){ source =>
+    withCloseable(Source.fromFile(dayFile(dir, month, day))(Codec.UTF8)){ source =>
       val result = iterate(source.getLines()){ decode[ChatMsgInfo] _}.toArray.sortBy(_.timems)
       val documentsByUserIds = result.foldLeft(mutable.Map[String, ArrayBuffer[ChatMsgInfo]]()) { (map, cmi) =>
         if(!map.contains(cmi.userId)) map(cmi.userId) = ArrayBuffer[ChatMsgInfo]()
         map(cmi.userId).append(cmi.copy(sentences = cmi.sentences.map(_.toLowerCase())))
         map
       }
-//      val finalResult: ArrayBuffer[Array[String]] = TextAggregator.distinct {
-//        documentsByUserIds.iterator.flatMap { case (_, msgs) =>
-//          TextAggregator.clusterize(msgs, 1 minute)
-//        }.to[ArrayBuffer]
-//      }
       val finalResult: Array[Array[ChatMsgInfo.Sentence]] =
         documentsByUserIds.flatMap { case (_, msgs) => TextAggregator.distinct(msgs.map(_.sentences)) }.toArray
 
