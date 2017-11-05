@@ -2,6 +2,7 @@ package com.dosar.sentiment
 
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
+import scala.reflect.ClassTag
 
 object Helper {
   val filename = "/Users/nightmarepipetz/Downloads/query-hive-37507.csv"
@@ -70,4 +71,17 @@ object Helper {
   def cleanStr(str: String) = {
     str.replace("\"{", "{").replace("}\"", "}").replace("""\"""", "\"")
   }
+
+  implicit class ArrayOps[T](val array: Array[T]) extends AnyVal {
+    def dropAndTransform[D: ClassTag](howMuchToDrop: Int, transform: T => D): Array[D] = {
+      val output = new Array[D](array.length - howMuchToDrop)
+      var ind = howMuchToDrop
+      while(ind < array.length) {
+        output(ind - howMuchToDrop) = transform(array(ind))
+        ind += 1
+      }
+      output
+    }
+  }
+
 }

@@ -2,8 +2,8 @@ package com.dosar.sentiment
 
 import java.util.Properties
 
-import edu.ucla.sspace.clustering.ClusteringByCommittee
-import edu.ucla.sspace.matrix.AtomicGrowingSparseMatrix
+import edu.ucla.sspace.clustering.{Assignments, CKVWSpectralClustering03, ClusteringByCommittee, SpectralClustering}
+import edu.ucla.sspace.matrix.{ArrayMatrix, AtomicGrowingSparseMatrix}
 import org.deeplearning4j.models.embeddings.loader.WordVectorSerializer
 import org.deeplearning4j.models.word2vec.Word2Vec
 import org.deeplearning4j.plot.BarnesHutTsne
@@ -11,6 +11,7 @@ import org.deeplearning4j.text.sentenceiterator.{SentenceIterator, SentencePrePr
 import org.deeplearning4j.text.tokenization.tokenizerfactory.TokenizerFactory
 import io.circe.parser.decode
 import org.deeplearning4j.text.tokenization.tokenizer.preprocessor.StringCleaning
+import Helper._
 
 import scala.collection.mutable
 
@@ -23,7 +24,6 @@ class Word2VecHelper private[Word2VecHelper](resultDimensions: Int, fileGenerato
   def trainAndStore(tokenizerFactory: TokenizerFactory, sentenceIterator: SentenceIterator) = {
     val vecTrainee: Word2Vec = new Word2Vec.Builder()
       .minWordFrequency(5)
-      .allowParallelTokenization(true)
       .iterations(2)
       .epochs(1)
       .layerSize(resultDimensions)
@@ -69,7 +69,7 @@ class Word2VecHelper private[Word2VecHelper](resultDimensions: Int, fileGenerato
       for(i <- 0 until vocabCache.numWords()) {
         val word = vocabCache.elementAtIndex(i).getLabel
         val vector = lookupTable.vector(word)
-        if(vector.length() != 300) println("vector length is " + vector.length())
+        if(vector.length() != resultDimensions) println("vector length is " + vector.length())
         for(j <- 0 until vector.length())
           m.set(i, j, vector.getDouble(j))
         wordByInd(i) = word
@@ -77,14 +77,37 @@ class Word2VecHelper private[Word2VecHelper](resultDimensions: Int, fileGenerato
     }
     val committee = new ClusteringByCommittee()
     val properties = new Properties()
-    properties.setProperty(ClusteringByCommittee.COMMITTEE_SIMILARITY_THRESHOLD_PROPERTY, "0.99")
-    properties.setProperty(ClusteringByCommittee.RESIDUE_SIMILARITY_THRESHOLD_PROPERTY, "0.7")
+//    properties.setProperty(ClusteringByCommittee.COMMITTEE_SIMILARITY_THRESHOLD_PROPERTY, "0.99")
+//    properties.setProperty(ClusteringByCommittee.RESIDUE_SIMILARITY_THRESHOLD_PROPERTY, "0.7")
+    properties.setProperty(ClusteringByCommittee.HARD_CLUSTERING_PROPERTY, "false")
 
     val result = committee.cluster(m, properties)
     println("number of clusters is " + result.numClusters())
     for(i <- 0 until result.numClusters()){
       println(s"$i cluster has ${result.get(i).length()} elements")
     }
+  }
+
+  def spectralCluster() = {
+    val matrix = meter("building matrix") {
+      val matrix = Helper.withCloseable(scala.io.Source.fromFile(fileGenerator.vectorsFile)) { source =>
+        val it = source.getLines().drop(1)
+        val buffer = mutable.ArrayBuffer[Array[Double]]()
+        while(it.hasNext)
+          buffer.append(it.next().split(' ').dropAndTransform(1, _.toDouble))
+        buffer
+      }
+      new ArrayMatrix(matrix.toArray)
+    }
+    val result = meter("clusterizing") { new CKVWSpectralClustering03().cluster(matrix, null) }
+    println("number of clusters is " + result.numClusters())
+    for(i <- 0 until result.numClusters()){
+      println(s"$i cluster has ${result.get(i).length()} elements")
+    }
+  }
+
+  def printClusters(file: String, clusters: Assignments) = {
+    clusters.getCentroids
   }
 }
 

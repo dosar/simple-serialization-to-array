@@ -18,22 +18,30 @@ object SentimentDetectorApp extends App {
 
   object data {
 
+    val trainingInput = conf.filesDir + "/word-vec-input-2017-8_10.txt"
+    val google10000EnWords = conf.filesDir + "/google-10000-english.txt"
+    val shardInput = conf.filesDir + "/query-hive-38246.csv"
+    val shardOutput = conf.filesDir + "/user-documens/"
+
     def shard() =
       new DataPreparer().putDataAccordingToDate(fileFrom = shardInput, dirTo = shardOutput)
 
     def prepareForTraining() =
       new DataPreparer().prepareInputForWord2Vec(dirFrom = shardOutput, fileTo = trainingInput)
 
-    def engVocab(): String => Boolean = withCloseable(scala.io.Source.fromFile(data.google10000EnWords, "UTF-8")) { source =>
-      source.getLines().foldLeft(mutable.HashSet[String]()){ (set, word) => set.add(word); set }
+    final val engVocab: Vocab = new Vocab {
+      override final val lang: Option[String] = Some("en")
+      override def apply(word: String): Boolean = vocab(word)
+
+      private final val vocab = withCloseable(scala.io.Source.fromFile(data.google10000EnWords, "UTF-8")) { source =>
+        source.getLines().foldLeft(mutable.HashSet[String]()){ (set, word) => set.add(word); set }
+      }
     }
 
-    def allVocab(): String => Boolean = x => true
-
-    val trainingInput = conf.filesDir + "/word-vec-input-2017-8_10.txt"
-    val google10000EnWords = conf.filesDir + "/google-10000-english.txt"
-    val shardInput = conf.filesDir + "/query-hive-38246.csv"
-    val shardOutput = conf.filesDir + "/user-documens/"
+    def allVocab(): Vocab = new Vocab {
+      override final val lang: Option[String] = None
+      override def apply(word: String): Boolean = true
+    }
   }
 
   object forOctave {
@@ -57,10 +65,10 @@ object SentimentDetectorApp extends App {
 
   object debug {
     def countSentences() = {
-      val it = new UserDocumentSentenceIterator(data.trainingInput, data.engVocab())
+      val it = new UserDocumentSentenceIterator(data.trainingInput, data.engVocab)
       var sentences = 0
       val words = new mutable.HashSet[String]()
-      while (it.hasNext) {
+      while (it.hasNext()) {
         val sentence = it.nextSentence()
         sentence.split(' ').foreach(w => words.add(StringCleaning.stripPunct(w)))
         sentences += 1
@@ -71,7 +79,7 @@ object SentimentDetectorApp extends App {
 
     def showWordsInSentenceDistribution() = {
       type WordsCount = Int; type SentCount = Int
-      withCloseable(new UserDocumentSentenceIterator(data.trainingInput, data.engVocab())) { it =>
+      withCloseable(new UserDocumentSentenceIterator(data.trainingInput, data.engVocab)) { it =>
         val result = it.toScalaIterator.foldLeft(mutable.Map[WordsCount, SentCount]() withDefaultValue 0) { case (map, sentence) =>
           val wordsCount = sentence.split(' ').length
           map(wordsCount) += 1
@@ -89,19 +97,20 @@ object SentimentDetectorApp extends App {
   }
 
   object word2vec {
-    final val dimensions = 300
-    final val fileGenerator = new FileGenerator(conf.filesDir, dimensions, None)
+    final val dimensions = 700
+    final val vocab = data.engVocab
+    final val fileGenerator = new FileGenerator(conf.filesDir, dimensions, postfix = vocab.lang, run = None)
     final val helper = Word2VecHelper(dimensions, fileGenerator)
 
     def startSkipGram() = {
       meter ("word 2 vec training"){
-        val sentenceIterator = new UserDocumentSentenceIterator(data.trainingInput, data.allVocab())
+        val sentenceIterator = new UserDocumentSentenceIterator(data.trainingInput, vocab)
         helper.trainAndStore(ngramFactory(1, 2), sentenceIterator)
       }
     }
 
     def clusterize() = {
-      val vec = helper.loadWord2Vec()
+      val vec = meter("model loading"){ helper.loadWord2Vec() }
       helper.clusterByCommittee(vec)
     }
 
