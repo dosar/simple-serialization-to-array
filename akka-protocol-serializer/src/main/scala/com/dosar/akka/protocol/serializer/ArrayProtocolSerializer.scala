@@ -5,7 +5,7 @@ import java.util.concurrent.atomic.AtomicInteger
 
 import akka.serialization.Serializer
 import com.dosar.to.array.utils.ByteBufferUtils.ByteBufferOps
-import com.dosar.to.array.{Deserializer, Length, Serializer => ToArraySerializer}
+import com.dosar.to.array.{Deserializer, Length, Serializer => TASerializer}
 
 import scala.collection.concurrent.TrieMap
 import scala.reflect.ClassTag
@@ -22,7 +22,7 @@ class ArrayProtocolSerializer extends Serializer {
 
 object ClazzRegistry {
 
-  def register[T](implicit TCT: ClassTag[T], TS: ToArraySerializer[T], TD: Deserializer[T], TL: Length[T]): Unit = {
+  def register[T](implicit TCT: ClassTag[T], TS: TASerializer[T], TD: Deserializer[T], TL: Length[T]): Unit = {
     val classMarker = markerCounter.getAndIncrement()
     classMarkerMap.putIfAbsent(TCT.runtimeClass, classMarker) map { _ =>
       throw new Error(s"there was an existing registered class with ${TCT.runtimeClass} -> ${(TS, TD, TL)}")
@@ -35,7 +35,7 @@ object ClazzRegistry {
     val classMarker = classMarkerMap(o.getClass)
     val (serializer, _, length) = map(classMarker)
     val buffer = ByteBuffer.wrap(new Array[Byte](intLength(classMarker) + length(o)))
-    buffer.write(classMarker)(intSerializer)
+    intSerializer(buffer, classMarker)
     serializer(buffer, o)
     buffer.array()
   }
@@ -49,9 +49,9 @@ object ClazzRegistry {
   //TODO: remove this dirty hack
   private def as[T](o: Any) = o.asInstanceOf[T]
   private final val classMarkerMap = new TrieMap[Class[_], Int]()
-  private final val map = new TrieMap[Int, (ToArraySerializer[_ >: AnyRef], Deserializer[_ >: AnyRef], Length[_ >: AnyRef])]()
+  private final val map = new TrieMap[Int, (TASerializer[_ >: AnyRef], Deserializer[_ >: AnyRef], Length[_ >: AnyRef])]()
   private final val intLength = Length[Int]
-  private final val intSerializer = ToArraySerializer[Int]
+  private final val intSerializer = TASerializer[Int]
   private final val intDeserializer = Deserializer[Int]
   private final val markerCounter = new AtomicInteger(0)
 }
